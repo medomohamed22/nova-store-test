@@ -1,0 +1,8 @@
+{
+  "name": "nova-store",
+  "version": "1.0.0",
+  "description": "Nova Store - Luxury Footwear Landing Page",
+  "scripts": {
+    "start": "npx serve . -l 3000"
+  }
+}
