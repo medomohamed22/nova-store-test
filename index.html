@@ -103,15 +103,22 @@ model-viewer{width:100%;height:100%;background:radial-gradient(circle at 50% 35%
       <div class="inline"><input id="modelSearch" dir="ltr" placeholder="ابحث أو اكتب اسم الموديل"><button class="btn sm cyan" id="refresh">↻ تحديث</button></div>
       <div class="models" id="models"></div>
     </div>
-    <div class="row"><div><label>Temperature</label><input id="temp" type="number" value=".2" min="0" max="2" step=".1"></div><div><label>Max tokens</label><input id="tokens" type="number" value="5000" min="256" step="256"></div></div>
+    <div class="row"><div><label>Temperature</label><input id="temp" dir="ltr" type="number" value=".2" min="0" max="2" step=".1"></div><div><label>Max tokens</label><input id="tokens" dir="ltr" type="number" value="5000" min="256" step="256"></div></div>
     <div id="providerStatus" class="statusmsg">المفتاح يمر عبر Vercel Proxy في نفس الطلب ولا يتم حفظه بواسطة الكود.</div>
   </div>
 
-  <div class="card">
-    <label>Vercel Blender Worker</label>
-    <div class="tiny muted">Endpoint: <code>/api/render</code> • Blender/bpy 5.2.2 • Python 3.13</div>
-    <button class="btn sm" id="workerHealth" style="width:100%;margin-top:8px">فحص جاهزية Blender</button>
-    <div id="workerStatus" class="statusmsg" style="margin-top:7px">لم يتم الفحص بعد.</div>
+  <div class="card stack">
+    <div>
+      <label>Blender Worker URL</label>
+      <input id="workerUrl" dir="ltr" placeholder="https://your-worker.example.com">
+    </div>
+    <div>
+      <label>Worker Token (اختياري)</label>
+      <input id="workerToken" dir="ltr" type="password" placeholder="secret token">
+    </div>
+    <div class="tiny muted">Blender يعمل خارج Vercel داخل Docker كامل؛ هذا يحل مشكلة libX11 من الجذر.</div>
+    <button class="btn sm" id="workerHealth" style="width:100%">فحص جاهزية Blender</button>
+    <div id="workerStatus" class="statusmsg">لم يتم الفحص بعد.</div>
   </div>
 
   <div class="card"><label>Agent Progress</label><div class="timeline">
@@ -179,7 +186,7 @@ async function llm(messages){
  if($('#provider').value==='mock')return mockCode();
  let c=creds(); if(!c.base_url||!c.api_key)throw new Error('اكتب API URL و API Key');
  let model=$('#modelSearch').value.trim()||selected;
- let data=await proxy('/api/chat',{...c,model,messages,temperature:Number($('#temp').value),max_tokens:Number($('#tokens').value)});
+ let data=await proxy('/api/chat',{...c,model,messages,temperature:Number($('#temp').value),max_tokens:Number($('#tokens').value),retries:3});
  return data.content||'';
 }
 function clean(s){return s.replace(/^```python\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'').trim()}
@@ -194,9 +201,20 @@ async function modify(){
  try{let out=await llm([{role:'system',content:sys()+'\nPatch the existing code. Preserve correct parts. Return the FULL corrected Python only.'},{role:'user',content:`CURRENT CODE:\n${$('#code').value}\n\nCHANGE:\n${m}`}]);$('#code').value=clean(out);step(6,'done');stat('تم التعديل');log('Code patched','o');openV('codeV')}catch(e){log(e.message,'e');alert(e.message)}
 }
 async function renderScene(){
- let script=$('#code').value.trim();if(!script||script.startsWith('# Blender Python'))return alert('ولّد الكود أولاً');
- step(4,'on');stat('Blender يرندر...');log('Sending scene code to /api/render ...');
- try{let d=await proxy('/api/render',{script,engine:$('#engine').value,iteration});
+ let script=$('#code').value.trim();
+ if(!script||script.startsWith('# Blender Python'))return alert('ولّد الكود أولاً');
+ let base=$('#workerUrl').value.trim().replace(/\/$/,'');
+ if(!base)return alert('اكتب Blender Worker URL');
+ step(4,'on');stat('Blender يرندر...');log('Sending scene code to external Blender Worker...');
+ try{
+   let headers={'Content-Type':'application/json'};
+   let tok=$('#workerToken').value.trim(); if(tok)headers['X-Worker-Token']=tok;
+   let r=await fetch(base+'/render',{
+     method:'POST',headers,
+     body:JSON.stringify({script,engine:$('#engine').value,iteration})
+   });
+   let tx=await r.text(),d;try{d=JSON.parse(tx)}catch{d={detail:tx}}
+   if(!r.ok)throw new Error(d.detail||d.error||tx||('Worker '+r.status));
    if(d.render_data_url){renderData=d.render_data_url;$('#renderImg').src=renderData;$('#renderImg').classList.remove('hide');$('#renderEmpty').classList.add('hide')}
    if(d.glb_data_url){$('#mv').src=d.glb_data_url;$('#viewerEmpty').classList.add('hide')}
    step(4,'done');stat('الرندر جاهز');log(`Render OK (${d.elapsed_ms||'?'} ms)`,'o');openV('renderV');return d
@@ -220,7 +238,18 @@ async function autoFix(){
 }
 function parseJSON(s){try{return JSON.parse(s)}catch{}let a=s.indexOf('{'),b=s.lastIndexOf('}');if(a>=0&&b>a)try{return JSON.parse(s.slice(a,b+1))}catch{}return null}
 function showCrit(j,raw){$('#pScore').textContent=j?.prompt_match??'—';$('#cScore').textContent=j?.composition??'—';$('#lScore').textContent=j?.lighting??'—';$('#sScore').textContent=j?.spatial??'—';$('#critiqueText').textContent=j?`${j.summary||''}\n\n${(j.issues||[]).map((x,i)=>`${i+1}. [${x.severity}] ${x.problem}\n→ ${x.fix}`).join('\n')}`:raw}
-async function health(){stat('فحص Blender...');try{let r=await fetch('/api/render');let d=await r.json();$('#workerStatus').textContent=d.ok?`جاهز: bpy ${d.bpy_version} / Python ${d.python}`:`غير جاهز: ${d.error||'unknown'}`;log('Blender health: '+JSON.stringify(d),d.ok?'o':'e')}catch(e){$('#workerStatus').textContent=e.message;log(e.message,'e')}finally{stat('جاهز')}}
+async function health(){
+ let base=$('#workerUrl').value.trim().replace(/\/$/,'');
+ if(!base)return alert('اكتب Blender Worker URL');
+ stat('فحص Blender...');
+ try{
+   let r=await fetch(base+'/health');
+   let d=await r.json();
+   $('#workerStatus').textContent=d.ok?`جاهز: ${d.blender||'Blender'}`:`غير جاهز: ${d.error||'unknown'}`;
+   log('Blender health: '+JSON.stringify(d),d.ok?'o':'e')
+ }catch(e){$('#workerStatus').textContent=e.message;log(e.message,'e')}
+ finally{stat('جاهز')}
+}
 function mockCode(){return `import bpy\nimport math\nfrom mathutils import Vector\n\nbpy.ops.object.select_all(action='SELECT')\nbpy.ops.object.delete(use_global=False)\nscene=bpy.context.scene\nscene.unit_settings.system='METRIC'\nscene.render.engine='${$('#engine').value}'\n\n# Floor\nbpy.ops.mesh.primitive_cube_add(location=(0,0,0.1), scale=(${Number($('#w').value)/2},${Number($('#l').value)/2},0.1))\nfloor=bpy.context.object\nfloor.name='Booth_Floor'\n\n# Back wall\nbpy.ops.mesh.primitive_cube_add(location=(0,${Number($('#l').value)/2-.1},1.5), scale=(${Number($('#w').value)/2},.1,1.5))\nwall=bpy.context.object\nwall.name='Back_Wall'\n\n# LED\nbpy.ops.mesh.primitive_cube_add(location=(0,${Number($('#l').value)/2-.22},1.65), scale=(1.6,.05,.9))\nscreen=bpy.context.object\nscreen.name='LED_Screen'\n\n# Desk\nbpy.ops.mesh.primitive_cube_add(location=(1.5,-.8,.55), scale=(.8,.35,.55))\ndesk=bpy.context.object\ndesk.name='Reception_Desk'\n\n# Lighting\nbpy.ops.object.light_add(type='AREA', location=(0,-1,4))\nlight=bpy.context.object\nlight.data.energy=1100\nlight.data.shape='RECTANGLE'\nlight.data.size=5\n\n# Camera\nbpy.ops.object.camera_add(location=(8,-8,5.5))\ncam=bpy.context.object\nscene.camera=cam\ndirection=Vector((0,0,1.2))-cam.location\ncam.rotation_euler=direction.to_track_quat('-Z','Y').to_euler()\n`}
 
 $('#generate').onclick=generate;$('#modify').onclick=modify;$('#render').onclick=renderScene;$('#critic').onclick=critique;$('#fix').onclick=autoFix;$('#workerHealth').onclick=health;
