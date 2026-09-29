@@ -3,9 +3,9 @@ import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawn } from 'node:child_process';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { get, put, del } from '@vercel/blob';
 
@@ -128,6 +128,75 @@ function codexBin() {
   return join(dirname(packageJson), 'bin', 'codex.js');
 }
 
+const MAX_WORKSPACE_FILES = 200;
+const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_WORKSPACE_TOTAL_BYTES = 12 * 1024 * 1024;
+
+function safeWorkspaceRelativePath(value) {
+  const raw = String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!raw || raw.includes('\0') || raw.startsWith('/') || raw.split('/').includes('..')) {
+    throw new Error('Invalid workspace path');
+  }
+  const clean = normalize(raw).replace(/\\/g, '/');
+  if (!clean || clean === '.' || clean.startsWith('../') || isAbsolute(clean)) {
+    throw new Error('Invalid workspace path');
+  }
+  return clean;
+}
+
+async function replaceWorkspace(workDir, files) {
+  if (!files || typeof files !== 'object' || Array.isArray(files)) throw new Error('files must be an object');
+  const entries = Object.entries(files);
+  if (entries.length > MAX_WORKSPACE_FILES) throw new Error(`Too many files (max ${MAX_WORKSPACE_FILES})`);
+  let total = 0;
+  const prepared = [];
+  for (const [name, value] of entries) {
+    const rel = safeWorkspaceRelativePath(name);
+    const content = Buffer.from(String(value ?? ''), 'utf8');
+    if (content.length > MAX_WORKSPACE_FILE_BYTES) throw new Error(`File too large: ${rel}`);
+    total += content.length;
+    if (total > MAX_WORKSPACE_TOTAL_BYTES) throw new Error('Workspace is too large');
+    prepared.push([rel, content]);
+  }
+  await rm(workDir, { recursive: true, force: true });
+  await mkdir(workDir, { recursive: true });
+  for (const [rel, content] of prepared) {
+    const target = join(workDir, rel);
+    const relCheck = relative(workDir, target);
+    if (!relCheck || relCheck.startsWith('..') || isAbsolute(relCheck)) throw new Error('Invalid workspace path');
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, { mode: 0o600 });
+  }
+  return { count: prepared.length, bytes: total };
+}
+
+async function readWorkspace(workDir) {
+  const files = {};
+  let count = 0;
+  let total = 0;
+  async function walk(dir, prefix = '') {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules') continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, rel);
+      } else if (entry.isFile()) {
+        count += 1;
+        if (count > MAX_WORKSPACE_FILES) throw new Error(`Too many files (max ${MAX_WORKSPACE_FILES})`);
+        const buf = await readFile(full);
+        if (buf.length > MAX_WORKSPACE_FILE_BYTES) throw new Error(`File too large: ${rel}`);
+        total += buf.length;
+        if (total > MAX_WORKSPACE_TOTAL_BYTES) throw new Error('Workspace is too large');
+        files[rel] = buf.toString('utf8');
+      }
+    }
+  }
+  await walk(workDir);
+  return { files, count, bytes: total };
+}
+
 wss.on('connection', async (ws, req) => {
   const sid = cookies(req.headers.cookie || '').aiway_sid;
   if (!sid || !/^[A-Za-z0-9_-]{32,128}$/.test(sid)) {
@@ -203,16 +272,34 @@ wss.on('connection', async (ws, req) => {
     if (!closed && ws.readyState === WebSocket.OPEN) ws.close(1011, 'Codex process exited');
   });
 
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     if (child.stdin.destroyed) return;
     const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
-    child.stdin.write(text.replace(/[\r\n]+$/, '') + '\n');
     try {
       const message = JSON.parse(text);
+      if (message.method === 'aiway/workspace/push') {
+        try {
+          const result = await replaceWorkspace(workDir, message.params?.files || {});
+          safeSend({ id: message.id, result });
+        } catch (error) {
+          safeSend({ id: message.id, error: { message: error.message } });
+        }
+        return;
+      }
+      if (message.method === 'aiway/workspace/pull') {
+        try {
+          const result = await readWorkspace(workDir);
+          safeSend({ id: message.id, result });
+        } catch (error) {
+          safeSend({ id: message.id, error: { message: error.message } });
+        }
+        return;
+      }
       if (message.method === 'account/logout') {
         setTimeout(() => removePersistedAuth(hash, canPersist), 500);
       }
     } catch {}
+    child.stdin.write(text.replace(/[\r\n]+$/, '') + '\n');
   });
 
   ws.on('close', async () => {
