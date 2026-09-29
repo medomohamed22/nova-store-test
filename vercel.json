@@ -4,11 +4,8 @@
     "api/render.py": {
       "maxDuration": 300
     },
-    "api/chat.js": {
+    "api/*.js": {
       "maxDuration": 120
-    },
-    "api/models.js": {
-      "maxDuration": 45
     }
   }
 }

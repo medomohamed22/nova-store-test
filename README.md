@@ -1,3 +1,62 @@
+# SceneForge AI — FIXED Vercel build
+
+This package fixes the two build errors shown in your Vercel logs.
+
+## What changed
+
+1. `pyproject.toml` now explicitly pins Python 3.13:
+   `requires-python = ">=3.13,<3.14"`
+
+2. `bpy==5.2.2` is declared in `pyproject.toml`, because its wheel is CPython 3.13.
+
+3. `requirements.txt` was removed so there is only one Python dependency source.
+
+4. `api/render.py` is present and `vercel.json` points to the real function.
+
+5. `.python-version` is also included as a secondary Python 3.13 pin.
+
+## GitHub check before redeploying
+
+At the ROOT of the repository you must see:
+
+- `index.html`
+- `pyproject.toml`
+- `.python-version`
+- `vercel.json`
+- `package.json`
+- `api/render.py`
+- `api/chat.js`
+- `api/models.js`
+
+The `api` folder must NOT be inside another folder such as `sceneforge-vercel/api`.
+
+## Vercel project settings
+
+Framework Preset: Other
+
+Root Directory: `./`
+
+Enable Fluid Compute.
+
+If the Blender function exceeds the normal bundle-size path, add this Environment Variable:
+
+`VERCEL_SUPPORT_LARGE_FUNCTIONS=1`
+
+Then redeploy without using the old build cache if Vercel offers that option.
+
+## Expected Python build log
+
+You should now see Vercel resolve Python 3.13 rather than:
+
+`Using python version: 3.12`
+
+The `bpy==5.2.2` wheel requires the `cp313` ABI, which is why 3.12 failed.
+
+## Security
+
+`api/render.py` is still a private hackathon MVP worker. It performs best-effort AST filtering, but it is not a hardened public arbitrary-Python sandbox.
+
+
 # SceneForge AI — Vercel MVP
 
 A one-page AI Blender coding agent with:
