@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": true,
   "functions": {
-    "api/ws.mjs": {
+    "api/ws.js": {
       "maxDuration": 300,
       "includeFiles": "node_modules/@openai/**"
     }
