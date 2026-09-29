@@ -2,89 +2,236 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { createRequire } from 'node:module';
 import { get, put, del } from '@vercel/blob';
 
+const require = createRequire(import.meta.url);
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
-const here = path.dirname(fileURLToPath(import.meta.url));
-const codexJs = path.resolve(here, '../node_modules/@openai/codex/bin/codex.js');
 
-function sessionId(req) {
-  return (req.headers.cookie || '').match(/(?:^|;\s*)aiway_sid=([a-f0-9]{48})(?:;|$)/)?.[1] || null;
+app.get('/api/ws', (_req, res) => res.status(426).json({ error: 'WebSocket upgrade required' }));
+app.get('/', (_req, res) => res.status(426).json({ error: 'WebSocket upgrade required' }));
+
+function cookies(header = '') {
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .map((v) => {
+        const i = v.indexOf('=');
+        return i < 0 ? [v, ''] : [v.slice(0, i), decodeURIComponent(v.slice(i + 1))];
+      }),
+  );
 }
-function keyBytes() {
-  const raw = process.env.CODEX_CREDENTIALS_KEY;
-  return raw ? createHash('sha256').update(raw).digest() : null;
+
+function sessionHash(sid) {
+  return createHash('sha256').update(sid).digest('hex');
 }
-function encrypt(data) {
-  const key = keyBytes();
-  if (!key) return null;
-  const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
-  const body = Buffer.concat([cipher.update(data), cipher.final()]);
-  return Buffer.concat([Buffer.from('AICX1'), iv, cipher.getAuthTag(), body]);
+
+function encryptionKey() {
+  const value = process.env.AIWAY_CREDENTIAL_KEY;
+  return value ? createHash('sha256').update(value).digest() : null;
 }
-function decrypt(data) {
-  const key = keyBytes();
-  if (!key || data.subarray(0,5).toString() !== 'AICX1') return null;
-  const iv=data.subarray(5,17), tag=data.subarray(17,33), body=data.subarray(33);
-  const decipher=createDecipheriv('aes-256-gcm',key,iv); decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(body),decipher.final()]);
+
+function encrypt(buf) {
+  const key = encryptionKey();
+  if (!key) throw new Error('AIWAY_CREDENTIAL_KEY is not configured');
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const body = Buffer.concat([cipher.update(buf), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([Buffer.from('AIWAY1'), iv, tag, body]);
 }
+
+function decrypt(buf) {
+  const key = encryptionKey();
+  if (!key) throw new Error('AIWAY_CREDENTIAL_KEY is not configured');
+  if (buf.subarray(0, 6).toString() !== 'AIWAY1') throw new Error('Invalid encrypted credential format');
+  const iv = buf.subarray(6, 18);
+  const tag = buf.subarray(18, 34);
+  const body = buf.subarray(34);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(body), decipher.final()]);
+}
+
 async function streamToBuffer(stream) {
-  const chunks=[]; for await (const chunk of stream) chunks.push(Buffer.from(chunk)); return Buffer.concat(chunks);
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
 }
-async function restoreAuth(sid, home) {
-  if (!process.env.CODEX_CREDENTIALS_KEY) return;
+
+function blobPath(hash) {
+  return `codex-auth/${hash}.bin`;
+}
+
+function persistenceConfigured(req) {
+  return Boolean(
+    process.env.AIWAY_CREDENTIAL_KEY &&
+      (process.env.BLOB_READ_WRITE_TOKEN ||
+        req?.headers?.['x-vercel-oidc-token'] ||
+        process.env.VERCEL_OIDC_TOKEN),
+  );
+}
+
+async function restoreAuth(hash, codexHome, enabled) {
+  if (!enabled) return false;
   try {
-    const r = await get(`codex-auth/${sid}.bin`, { access:'private', useCache:false });
-    if (!r) return;
-    const enc=await streamToBuffer(r.stream), plain=decrypt(enc);
-    if (plain) await writeFile(path.join(home,'auth.json'), plain, { mode:0o600 });
-  } catch (e) {
-    if (!String(e?.message||e).toLowerCase().includes('not found')) console.error('restore auth:', e);
+    const result = await get(blobPath(hash), { access: 'private', useCache: false });
+    if (!result) return false;
+    const encrypted = await streamToBuffer(result.stream);
+    await writeFile(join(codexHome, 'auth.json'), decrypt(encrypted), { mode: 0o600 });
+    return true;
+  } catch (error) {
+    if (String(error?.message || error).match(/404|not found|BlobNotFound/i)) return false;
+    console.error('restoreAuth', error);
+    return false;
   }
 }
-async function persistAuth(sid, home) {
-  if (!process.env.CODEX_CREDENTIALS_KEY) return;
+
+async function persistAuth(hash, codexHome, enabled) {
+  if (!enabled) return false;
   try {
-    const raw=await readFile(path.join(home,'auth.json'));
-    const enc=encrypt(raw); if (!enc) return;
-    await put(`codex-auth/${sid}.bin`, enc, { access:'private', allowOverwrite:true, contentType:'application/octet-stream' });
-  } catch (e) {
-    if (e?.code === 'ENOENT') {
-      try { await del(`codex-auth/${sid}.bin`); } catch {}
-    } else console.error('persist auth:', e);
+    const authPath = join(codexHome, 'auth.json');
+    await stat(authPath);
+    const raw = await readFile(authPath);
+    await put(blobPath(hash), encrypt(raw), {
+      access: 'private',
+      allowOverwrite: true,
+      contentType: 'application/octet-stream',
+      cacheControlMaxAge: 60,
+    });
+    return true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.error('persistAuth', error);
+    return false;
   }
+}
+
+async function removePersistedAuth(hash, enabled) {
+  if (!enabled) return;
+  try {
+    await del(blobPath(hash));
+  } catch (error) {
+    console.error('removePersistedAuth', error);
+  }
+}
+
+function codexBin() {
+  const packageJson = require.resolve('@openai/codex/package.json');
+  return join(dirname(packageJson), 'bin', 'codex.js');
 }
 
 wss.on('connection', async (ws, req) => {
-  const sid=sessionId(req);
-  if (!sid) { ws.close(1008,'Missing session'); return; }
-  const home=path.join('/tmp',`aiway-codex-${sid}`);
-  await mkdir(home,{recursive:true});
-  await restoreAuth(sid,home);
-  const child=spawn(process.execPath,[codexJs,'app-server','--listen','stdio://'],{
-    env:{...process.env,CODEX_HOME:home,HOME:home},stdio:['pipe','pipe','pipe']
+  const sid = cookies(req.headers.cookie || '').aiway_sid;
+  if (!sid || !/^[A-Za-z0-9_-]{32,128}$/.test(sid)) {
+    ws.close(4401, 'Session cookie required');
+    return;
+  }
+
+  const hash = sessionHash(sid);
+  const canPersist = persistenceConfigured(req);
+  const codexHome = await mkdtemp(join(tmpdir(), `aiway-${hash.slice(0, 12)}-`));
+  const workDir = join(codexHome, 'workspace');
+  await mkdir(workDir, { recursive: true });
+
+  await writeFile(
+    join(codexHome, 'config.toml'),
+    'cli_auth_credentials_store = "file"\ncheck_for_update_on_startup = false\n',
+    { mode: 0o600 },
+  );
+
+  const restored = await restoreAuth(hash, codexHome, canPersist);
+  const child = spawn(process.execPath, [codexBin(), 'app-server', '--listen', 'stdio://'], {
+    cwd: workDir,
+    env: { ...process.env, CODEX_HOME: codexHome, HOME: codexHome },
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
-  let buffer='', saveTimer=null;
-  const scheduleSave=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>persistAuth(sid,home).catch(()=>{}),700)};
+
+  let stdoutBuffer = '';
+  let closed = false;
+  let saveTimer = null;
+
+  const safeSend = (obj) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(typeof obj === 'string' ? obj : JSON.stringify(obj));
+    }
+  };
+
+  safeSend({
+    method: 'aiway/server',
+    params: { persistence: canPersist, restored, workDir: '/workspace' },
+  });
+
+  const schedulePersist = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      persistAuth(hash, codexHome, canPersist).catch(() => {});
+    }, 700);
+  };
+
   child.stdout.setEncoding('utf8');
-  child.stdout.on('data',chunk=>{
-    buffer+=chunk;
-    let i; while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i).trim();buffer=buffer.slice(i+1);if(!line)continue;if(ws.readyState===WebSocket.OPEN)ws.send(line);try{const m=JSON.parse(line);if(['account/login/completed','account/updated','turn/completed'].includes(m.method))scheduleSave()}catch{}}
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk;
+    let index;
+    while ((index = stdoutBuffer.indexOf('\n')) >= 0) {
+      const line = stdoutBuffer.slice(0, index).trim();
+      stdoutBuffer = stdoutBuffer.slice(index + 1);
+      if (!line) continue;
+      safeSend(line);
+      try {
+        const message = JSON.parse(line);
+        if (message.method === 'account/login/completed' && message.params?.success) schedulePersist();
+        if (message.method === 'account/updated') schedulePersist();
+      } catch {}
+    }
   });
+
   child.stderr.setEncoding('utf8');
-  child.stderr.on('data',d=>console.error('codex:',d.trim()));
-  child.on('error',e=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({method:'aiway/error',params:{message:e.message}}))});
-  child.on('exit',(code)=>{persistAuth(sid,home).catch(()=>{});if(ws.readyState===WebSocket.OPEN)ws.close(1011,`Codex exited ${code}`)});
-  ws.on('message',data=>{const line=data.toString();try{const m=JSON.parse(line);if(m.method==='account/logout')setTimeout(scheduleSave,500)}catch{};if(child.stdin.writable)child.stdin.write(line+'\n')});
-  ws.on('close',async()=>{clearTimeout(saveTimer);await persistAuth(sid,home).catch(()=>{});if(!child.killed)child.kill('SIGTERM');setTimeout(()=>rm(home,{recursive:true,force:true}).catch(()=>{}),1500)});
+  child.stderr.on('data', (data) => console.error('[codex]', String(data).slice(0, 2000)));
+  child.on('error', (error) => {
+    safeSend({ method: 'aiway/error', params: { message: error.message } });
+  });
+  child.on('exit', (code, signal) => {
+    safeSend({ method: 'aiway/codexExited', params: { code, signal } });
+    if (!closed && ws.readyState === WebSocket.OPEN) ws.close(1011, 'Codex process exited');
+  });
+
+  ws.on('message', (data) => {
+    if (child.stdin.destroyed) return;
+    const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+    child.stdin.write(text.replace(/[\r\n]+$/, '') + '\n');
+    try {
+      const message = JSON.parse(text);
+      if (message.method === 'account/logout') {
+        setTimeout(() => removePersistedAuth(hash, canPersist), 500);
+      }
+    } catch {}
+  });
+
+  ws.on('close', async () => {
+    closed = true;
+    clearTimeout(saveTimer);
+    await persistAuth(hash, codexHome, canPersist).catch(() => {});
+    try {
+      child.kill('SIGTERM');
+    } catch {}
+    const killTimer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {}
+    }, 1200);
+    killTimer.unref?.();
+    setTimeout(() => rm(codexHome, { recursive: true, force: true }).catch(() => {}), 1500).unref?.();
+  });
+
+  ws.on('error', () => {});
 });
 
-app.get('/api/ws',(req,res)=>res.status(426).send('WebSocket upgrade required'));
 export default server;

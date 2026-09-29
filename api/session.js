@@ -1,13 +1,30 @@
 import { randomBytes } from 'node:crypto';
 
+function parseCookies(header = '') {
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .map((v) => {
+        const i = v.indexOf('=');
+        return i < 0 ? [v, ''] : [v.slice(0, i), decodeURIComponent(v.slice(i + 1))];
+      }),
+  );
+}
+
 export default function handler(req, res) {
-  const cookies = req.headers.cookie || '';
-  const hasSession = /(?:^|;\s*)aiway_sid=([a-f0-9]{48})(?:;|$)/.test(cookies);
-  if (!hasSession) {
-    const sid = randomBytes(24).toString('hex');
-    const secure = (req.headers['x-forwarded-proto'] || 'https') === 'https';
-    res.setHeader('Set-Cookie', `aiway_sid=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure ? '; Secure' : ''}`);
+  let sid = parseCookies(req.headers.cookie || '').aiway_sid;
+
+  if (!sid || !/^[A-Za-z0-9_-]{32,128}$/.test(sid)) {
+    sid = randomBytes(32).toString('base64url');
+    res.setHeader(
+      'Set-Cookie',
+      `aiway_sid=${sid}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict`,
+    );
   }
+
   res.setHeader('Cache-Control', 'no-store');
-  res.status(200).json({ ok: true });
+  res.statusCode = 204;
+  res.end();
 }
