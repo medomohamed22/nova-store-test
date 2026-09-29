@@ -1,2 +1,0 @@
-# nova-store-test
-Test
