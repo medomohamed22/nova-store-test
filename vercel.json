@@ -5,6 +5,9 @@
     "api/ws.js": {
       "maxDuration": 300,
       "includeFiles": "node_modules/@openai/**"
+    },
+    "api/google.js": {
+      "maxDuration": 300
     }
   },
   "headers": [
