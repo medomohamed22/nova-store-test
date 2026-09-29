@@ -1,0 +1,13 @@
+{
+  "name": "aiway-vercel-codex",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@openai/codex": "0.158.0",
+    "@vercel/blob": "^2.3.0",
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  }
+}
