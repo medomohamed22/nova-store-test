@@ -8,14 +8,20 @@ import { tmpdir } from 'node:os';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { get, put, del } from '@vercel/blob';
+import { allowedOrigin, sessionId } from '../server/security.js';
 
 const require = createRequire(import.meta.url);
-const app = express();
+export const app = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
+const activeSessions = new Map();
+let activeConnections = 0;
+const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 * 1024, verifyClient(info, done) {
+  if (!allowedOrigin(info.req)) return done(false, 403, 'Origin rejected');
+  if (!sessionId(info.req)) return done(false, 401, 'Session required');
+  done(true);
+} });
 
 app.get('/api/ws', (_req, res) => res.status(426).json({ error: 'WebSocket upgrade required' }));
-app.get('/', (_req, res) => res.status(426).json({ error: 'WebSocket upgrade required' }));
 
 function cookies(header = '') {
   return Object.fromEntries(
@@ -198,15 +204,31 @@ async function readWorkspace(workDir) {
 }
 
 wss.on('connection', async (ws, req) => {
-  const sid = cookies(req.headers.cookie || '').aiway_sid;
+  const sid = sessionId(req);
   if (!sid || !/^[A-Za-z0-9_-]{32,128}$/.test(sid)) {
     ws.close(4401, 'Session cookie required');
     return;
   }
 
   const hash = sessionHash(sid);
+  if (activeConnections >= Number(process.env.AIWAY_MAX_CONNECTIONS || 20) || (activeSessions.get(hash) || 0) >= 2) {
+    ws.close(4429, 'Too many active sessions');
+    return;
+  }
+  activeConnections++;
+  activeSessions.set(hash, (activeSessions.get(hash) || 0) + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true; activeConnections--;
+    const count = (activeSessions.get(hash) || 1) - 1;
+    if (count) activeSessions.set(hash, count); else activeSessions.delete(hash);
+  };
+  ws.once('close', release);
+  let codexHome;
+  try {
   const canPersist = persistenceConfigured(req);
-  const codexHome = await mkdtemp(join(tmpdir(), `aiway-${hash.slice(0, 12)}-`));
+  codexHome = await mkdtemp(join(tmpdir(), `aiway-${hash.slice(0, 12)}-`));
   const workDir = join(codexHome, 'workspace');
   await mkdir(workDir, { recursive: true });
 
@@ -219,13 +241,22 @@ wss.on('connection', async (ws, req) => {
   const restored = await restoreAuth(hash, codexHome, canPersist);
   const child = spawn(process.execPath, [codexBin(), 'app-server', '--listen', 'stdio://'], {
     cwd: workDir,
-    env: { ...process.env, CODEX_HOME: codexHome, HOME: codexHome },
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|LANG|LC_ALL|HTTPS_PROXY|HTTP_PROXY|NO_PROXY|NODE_EXTRA_CA_CERTS)$/i.test(key))), CODEX_HOME: codexHome, HOME: codexHome },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   let stdoutBuffer = '';
   let closed = false;
   let saveTimer = null;
+  let alive = true;
+  const heartbeat = setInterval(() => {
+    if (!alive) return ws.terminate();
+    alive = false; ws.ping();
+  }, 30000);
+  heartbeat.unref?.();
+  ws.on('pong', () => { alive = true; });
+  const lifetime = setTimeout(() => ws.close(1012, 'Session renewal required'), Number(process.env.AIWAY_SESSION_SECONDS || 240) * 1000);
+  lifetime.unref?.();
 
   const safeSend = (obj) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -272,7 +303,9 @@ wss.on('connection', async (ws, req) => {
     if (!closed && ws.readyState === WebSocket.OPEN) ws.close(1011, 'Codex process exited');
   });
 
-  ws.on('message', async (data) => {
+  let messageQueue = Promise.resolve();
+  ws.on('message', (data) => {
+    messageQueue = messageQueue.then(async () => {
     if (child.stdin.destroyed) return;
     const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
     try {
@@ -300,10 +333,13 @@ wss.on('connection', async (ws, req) => {
       }
     } catch {}
     child.stdin.write(text.replace(/[\r\n]+$/, '') + '\n');
+    }).catch((error) => safeSend({ method: 'aiway/error', params: { message: error.message } }));
   });
 
   ws.on('close', async () => {
     closed = true;
+    clearInterval(heartbeat);
+    clearTimeout(lifetime);
     clearTimeout(saveTimer);
     await persistAuth(hash, codexHome, canPersist).catch(() => {});
     try {
@@ -319,6 +355,13 @@ wss.on('connection', async (ws, req) => {
   });
 
   ws.on('error', () => {});
+  } catch (error) {
+    release();
+    console.error('session setup', error);
+    if (codexHome) await rm(codexHome, { recursive: true, force: true }).catch(() => {});
+    ws.close(1011, 'Session setup failed');
+  }
 });
 
 export default server;
+

@@ -1,0 +1,14 @@
+import {build} from 'esbuild';
+import {mkdir,copyFile} from 'node:fs/promises';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+await mkdir('assets/vendor',{recursive:true});
+await build({entryPoints:['src/app.js'],bundle:true,minify:true,format:'esm',target:'es2022',outfile:'assets/app.js',sourcemap:true});
+await build({entryPoints:['src/styles.css'],bundle:true,minify:true,outfile:'assets/app.css'});
+await copyFile('node_modules/esbuild-wasm/esbuild.wasm','assets/esbuild.wasm');
+for(const entry of ['react','react-dom','react-dom/client','react/jsx-runtime','react/jsx-dev-runtime']){
+  const plugins=entry==='react'?[]:[{name:'shared-react',setup(b){b.onResolve({filter:/^react$/},()=>({path:'react',external:true}))}}];
+  const names=Object.keys(require(entry)).filter(name=>/^[A-Za-z_$][\w$]*$/.test(name)&&name!=='default'&&name!=='__esModule');
+  await build({stdin:{contents:`import module from '${entry}';export const {${names.join(',')}}=module;export default module;`,resolveDir:process.cwd(),sourcefile:'vendor.js'},bundle:true,minify:true,format:'esm',platform:'browser',plugins,banner:entry==='react'?{}:{js:`import ReactDependency from 'react';const require=name=>{if(name==='react')return ReactDependency;throw Error('Unsupported package '+name)};`},define:{'process.env.NODE_ENV':'"production"'},outfile:'assets/vendor/'+entry.replaceAll('/','-')+'.js'});
+}
+console.log('Built editor, preview engine, React vendors and app assets.');

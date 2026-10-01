@@ -14,13 +14,15 @@ function parseCookies(header = '') {
 }
 
 export default function handler(req, res) {
-  let sid = parseCookies(req.headers.cookie || '').aiway_sid;
+  if (req.method !== 'POST') { res.statusCode = 405; res.setHeader('Allow', 'POST'); res.end(); return; }
+  let sid;
+  try { sid = parseCookies(req.headers.cookie || '').aiway_sid; } catch {}
 
   if (!sid || !/^[A-Za-z0-9_-]{32,128}$/.test(sid)) {
     sid = randomBytes(32).toString('base64url');
     res.setHeader(
       'Set-Cookie',
-      `aiway_sid=${sid}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Strict`,
+      `aiway_sid=${sid}; Path=/; Max-Age=31536000; HttpOnly;${req.headers.host?.startsWith('localhost:') || req.headers.host?.startsWith('127.0.0.1:') ? '' : ' Secure;'} SameSite=Strict`,
     );
   }
 

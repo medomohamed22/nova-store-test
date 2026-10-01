@@ -1,0 +1,2 @@
+import {defineConfig} from '@playwright/test';
+export default defineConfig({testDir:'./tests/browser',workers:1,timeout:45000,use:{baseURL:'http://localhost:4173',headless:true,launchOptions:{executablePath:process.env.AIWAY_BROWSER_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'}},webServer:{command:'node scripts/dev.mjs',port:4173,reuseExistingServer:true,timeout:30000},reporter:[['list'],['html',{open:'never'}]]});

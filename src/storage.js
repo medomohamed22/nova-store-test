@@ -1,0 +1,2 @@
+export function openDB(){return new Promise((resolve,reject)=>{const request=indexedDB.open('aiway-workspace',1);request.onupgradeneeded=()=>request.result.createObjectStore('chats',{keyPath:'id'});request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)})}
+export function readProjects(db){return new Promise((resolve,reject)=>{const request=db.transaction('chats','readonly').objectStore('chats').getAll();request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)})}
