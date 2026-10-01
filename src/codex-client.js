@@ -51,7 +51,7 @@ export class CodexClient {
         socket.addEventListener('error',()=>{clearTimeout(t);reject(Error('تعذر الاتصال بـ /api/ws. راجع سجل Function في Vercel.'))},{once:true});
         socket.addEventListener('close',()=>{clearTimeout(t);reject(Error('أغلق الخادم اتصال Codex قبل التهيئة.'))},{once:true});
       });
-      await this.rpc('initialize',{clientInfo:{name:'aiway-web',title:'AiWay',version:'3.1.0'},capabilities:{experimentalApi:true}},15000);
+      await this.rpc('initialize',{clientInfo:{name:'aiway-web',title:'AiWay',version:'3.2.0'},capabilities:{experimentalApi:true}},15000);
       if(generation!==this.generation)return;
       this.notify('initialized',{});this.ready=true;this.connectedAt=Date.now();this.retryAttempt=0;this.onState('ready','متصل');this.onReady();
     }catch(error){if(generation===this.generation){this.ready=false;this.onState('error',error.message);socket.close();this.scheduleRetry()}throw error}

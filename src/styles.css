@@ -1,3 +1,4 @@
+@import "./assistant.css";
 
     :root{--blue:#2563eb;--ink:#18243b;--muted:#8491a6;--line:#e9edf4;--bg:#f7f9fc;--sidebar:#f4f7fb}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans Arabic',Inter,sans-serif}button,input,textarea,select{font:inherit}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid #8ab3ff;outline-offset:2px}svg{flex:none}

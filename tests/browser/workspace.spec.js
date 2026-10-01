@@ -77,9 +77,11 @@ test('AI proposals stay pending through reload and only apply after acceptance',
 });
 test('backup restores independent projects without provider credentials',async({page})=>{
   await boot(page);await loadProject(page,{'index.html':'<h1>Backup test</h1>'});
+  await page.locator('#assistantHubButton').click();await page.locator('#hubTodoText').fill('BACKUP_PLAN_STEP');await page.locator('#hubTodoForm button').click();
   const downloaded=page.waitForEvent('download');await page.locator('#backupExport').click();const download=await downloaded,stream=await download.createReadStream(),chunks=[];for await(const chunk of stream)chunks.push(chunk);const buffer=Buffer.concat(chunks),backup=JSON.parse(buffer.toString());
   expect(backup.format).toBe('aiway-backup');expect(backup.projects[0].files['index.html']).toContain('Backup test');expect(backup.providers).toBeUndefined();
   await page.locator('#backupInput').setInputFiles({name:'backup.json',mimeType:'application/json',buffer});await expect(page.locator('#history')).toContainText('مستعاد');
+  await page.locator('.history-item').filter({hasText:'مستعاد'}).click();await page.locator('#assistantHubButton').click();await expect(page.locator('#hubTodoList')).toContainText('BACKUP_PLAN_STEP');
 });
 test('split editor and preview, dark layout and keyboard resize',async({page})=>{
   await page.setViewportSize({width:1600,height:1000});await boot(page);await loadProject(page,{'index.html':'<html><head><link rel="stylesheet" href="style.css"></head><body><h1>AiWay Preview</h1><p>Build, review and restore.</p></body></html>','style.css':'body{background:#101b2c;color:#e7f0ff;font-family:system-ui;padding:40px}h1{color:#79a9ff}'});

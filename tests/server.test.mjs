@@ -10,7 +10,7 @@ test('real Codex process replies to initialize sent immediately after WebSocket 
   try{
     const result=await new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>reject(Error('Native initialize timed out')),20000);
-      socket.on('open',()=>socket.send(JSON.stringify({id:1,method:'initialize',params:{clientInfo:{name:'aiway-regression',version:'3.1.0'},capabilities:{experimentalApi:true}}})));
+      socket.on('open',()=>socket.send(JSON.stringify({id:1,method:'initialize',params:{clientInfo:{name:'aiway-regression',version:'3.2.0'},capabilities:{experimentalApi:true}}})));
       socket.on('message',raw=>{const msg=JSON.parse(String(raw));if(msg.id===1){clearTimeout(timer);msg.error?reject(Error(msg.error.message)):resolve(msg.result)}});
       socket.on('error',error=>{clearTimeout(timer);reject(error)});
     });

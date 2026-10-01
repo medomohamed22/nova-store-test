@@ -1,7 +1,7 @@
 {
   "name": "aiway-vercel-codex",
   "private": true,
-  "version": "3.1.0",
+  "version": "3.2.0",
   "type": "module",
   "engines": {
     "node": "22.x"
@@ -35,7 +35,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev.mjs",
-    "test": "node --test tests/unit.test.mjs",
+    "test": "node --test tests/unit.test.mjs tests/assistant.test.mjs",
     "test:e2e": "playwright test"
   }
 }

@@ -275,7 +275,7 @@ wss.on('connection', async (ws, req) => {
 
   safeSend({
     method: 'aiway/server',
-    params: { persistence: canPersist, restored, workDir: '/workspace', sessionSeconds: Number(process.env.AIWAY_SESSION_SECONDS || 240), version: '3.1.0' },
+    params: { persistence: canPersist, restored, workDir: '/workspace', sessionSeconds: Number(process.env.AIWAY_SESSION_SECONDS || 240), version: '3.2.0' },
   });
 
   const schedulePersist = () => {
