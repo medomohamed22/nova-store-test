@@ -2,6 +2,7 @@ import * as esbuild from 'esbuild-wasm';
 let initialized;
 const vendors=new Map();
 function init(){return initialized ||= esbuild.initialize({wasmURL:'/assets/esbuild.wasm',worker:false})}
+export {init as initializeBuilder};
 export function resolvePath(from,request) {
   const parts=(request.startsWith('/')?request.slice(1):(from.includes('/')?from.slice(0,from.lastIndexOf('/')+1):'')+request).split('/'),out=[];
   for(const part of parts){if(part==='..')out.pop();else if(part&&part!=='.')out.push(part)}return out.join('/');

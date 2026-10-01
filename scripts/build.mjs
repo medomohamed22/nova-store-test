@@ -1,9 +1,10 @@
 import {build} from 'esbuild';
-import {mkdir,copyFile,cp} from 'node:fs/promises';
+import {mkdir,copyFile,cp,readFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 await mkdir('assets/vendor',{recursive:true});
-await build({entryPoints:['src/app.js'],bundle:true,minify:true,format:'esm',target:'es2022',outfile:'assets/app.js',sourcemap:true});
+await build({entryPoints:['src/app.js'],bundle:true,minify:true,format:'esm',target:'es2022',outfile:'assets/app.js',sourcemap:true,plugins:[{name:'raw-source',setup(b){b.onResolve({filter:/\?raw$/},args=>({path:resolve(args.resolveDir,args.path.slice(0,-4)),namespace:'raw'}));b.onLoad({filter:/.*/,namespace:'raw'},async args=>({contents:await readFile(args.path,'utf8'),loader:'text'}))}}]});
 await build({entryPoints:['src/styles.css'],bundle:true,minify:true,outfile:'assets/app.css'});
 await copyFile('node_modules/esbuild-wasm/esbuild.wasm','assets/esbuild.wasm');
 for(const entry of ['react','react-dom','react-dom/client','react/jsx-runtime','react/jsx-dev-runtime']){

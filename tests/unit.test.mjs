@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {githubChanges,applyReviewed,applyFileTool,safePath} from '../src/workspace.js';
 import {allowedOrigin,sessionId} from '../server/security.js';
+import {bufferMessages} from '../server/message-buffer.js';
+import {EventEmitter} from 'node:events';
+import {lineDiff} from '../src/diff.js';
+import browserAssert from '../src/test-assert.js';
 
 test('partial GitHub import only publishes changed tracked files',()=>{
   const base={'index.html':'before','src/app.js':'unchanged'},next={'index.html':'after','src/app.js':'unchanged'};
@@ -30,5 +34,28 @@ test('WebSocket origin and session parsing deny forged origins and malformed coo
   assert.equal(allowedOrigin({headers:{host:'aiway.test'}}),false);
   assert.equal(sessionId({headers:{cookie:'aiway_sid='+'a'.repeat(43)}}),'a'.repeat(43));
   assert.equal(sessionId({headers:{cookie:'aiway_sid=%ZZ'}}),null);
+});
+test('initialize sent during async server setup is queued and delivered exactly once',()=>{
+  const socket=new EventEmitter();socket.close=()=>{};const ready=bufferMessages(socket),received=[];
+  socket.emit('message','initialize');socket.emit('message','initialized');ready(data=>received.push(data));socket.emit('message','account/read');
+  assert.deepEqual(received,['initialize','initialized','account/read']);
+});
+test('line diff aligns insertions instead of showing unchanged lines as edits',()=>{
+  assert.deepEqual(lineDiff('a\nb\nc','a\ninserted\nb\nc'),[['same','  a'],['add','+ inserted'],['same','  b'],['same','  c']]);
+});
+
+test('browser assertions reject sparse array differences and unsupported object types',()=>{
+  assert.throws(()=>browserAssert.deepStrictEqual(Array(2),[]));
+  assert.throws(()=>browserAssert.deepStrictEqual(new Map(),new Map()),/غير مدعوم/);
+  browserAssert.deepStrictEqual({values:[1,2]},{values:[1,2]});
+});
+
+test('browser test hooks stay in their suite and unsupported options cannot silently pass',async()=>{
+  const harness=await import('../src/test-harness.js?unit');let count=0,message;
+  harness.describe('first',()=>{harness.beforeEach(()=>count++);harness.test('inside',()=>assert.equal(count,1))});
+  harness.test('outside',()=>assert.equal(count,1));
+  assert.throws(()=>harness.test('only',{only:true},()=>{}),/غير مدعوم/);
+  const previous=globalThis.postMessage;globalThis.postMessage=value=>message=value;
+  try{await harness.run();assert.deepEqual(message.results.map(r=>r.status),['passed','passed'])}finally{if(previous)globalThis.postMessage=previous;else delete globalThis.postMessage}
 });
 

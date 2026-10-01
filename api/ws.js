@@ -9,6 +9,7 @@ import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { get, put, del } from '@vercel/blob';
 import { allowedOrigin, sessionId } from '../server/security.js';
+import { bufferMessages } from '../server/message-buffer.js';
 
 const require = createRequire(import.meta.url);
 export const app = express();
@@ -88,8 +89,10 @@ function persistenceConfigured(req) {
 
 async function restoreAuth(hash, codexHome, enabled) {
   if (!enabled) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 7000);
   try {
-    const result = await get(blobPath(hash), { access: 'private', useCache: false });
+    const result = await get(blobPath(hash), { access: 'private', useCache: false, abortSignal: controller.signal });
     if (!result) return false;
     const encrypted = await streamToBuffer(result.stream);
     await writeFile(join(codexHome, 'auth.json'), decrypt(encrypted), { mode: 0o600 });
@@ -98,7 +101,7 @@ async function restoreAuth(hash, codexHome, enabled) {
     if (String(error?.message || error).match(/404|not found|BlobNotFound/i)) return false;
     console.error('restoreAuth', error);
     return false;
-  }
+  } finally { clearTimeout(timer); }
 }
 
 async function persistAuth(hash, codexHome, enabled) {
@@ -204,6 +207,7 @@ async function readWorkspace(workDir) {
 }
 
 wss.on('connection', async (ws, req) => {
+  const receiveBufferedMessages = bufferMessages(ws);
   const sid = sessionId(req);
   if (!sid || !/^[A-Za-z0-9_-]{32,128}$/.test(sid)) {
     ws.close(4401, 'Session cookie required');
@@ -239,6 +243,10 @@ wss.on('connection', async (ws, req) => {
   );
 
   const restored = await restoreAuth(hash, codexHome, canPersist);
+  if (ws.readyState !== WebSocket.OPEN) {
+    await rm(codexHome, { recursive: true, force: true });
+    return;
+  }
   const child = spawn(process.execPath, [codexBin(), 'app-server', '--listen', 'stdio://'], {
     cwd: workDir,
     env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|LANG|LC_ALL|HTTPS_PROXY|HTTP_PROXY|NO_PROXY|NODE_EXTRA_CA_CERTS)$/i.test(key))), CODEX_HOME: codexHome, HOME: codexHome },
@@ -248,6 +256,7 @@ wss.on('connection', async (ws, req) => {
   let stdoutBuffer = '';
   let closed = false;
   let saveTimer = null;
+  let logoutRequested = false;
   let alive = true;
   const heartbeat = setInterval(() => {
     if (!alive) return ws.terminate();
@@ -266,13 +275,14 @@ wss.on('connection', async (ws, req) => {
 
   safeSend({
     method: 'aiway/server',
-    params: { persistence: canPersist, restored, workDir: '/workspace' },
+    params: { persistence: canPersist, restored, workDir: '/workspace', sessionSeconds: Number(process.env.AIWAY_SESSION_SECONDS || 240), version: '3.1.0' },
   });
 
   const schedulePersist = () => {
+    if (logoutRequested) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      persistAuth(hash, codexHome, canPersist).catch(() => {});
+      persistAuth(hash, codexHome, canPersist).then(saved => safeSend({ method: 'aiway/authPersistence', params: { saved, enabled: canPersist } })).catch(() => {});
     }, 700);
   };
 
@@ -304,12 +314,13 @@ wss.on('connection', async (ws, req) => {
   });
 
   let messageQueue = Promise.resolve();
-  ws.on('message', (data) => {
+  receiveBufferedMessages((data) => {
     messageQueue = messageQueue.then(async () => {
     if (child.stdin.destroyed) return;
     const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
     try {
       const message = JSON.parse(text);
+      if (message.method === 'account/login/start') logoutRequested = false;
       if (message.method === 'aiway/workspace/push') {
         try {
           const result = await replaceWorkspace(workDir, message.params?.files || {});
@@ -329,7 +340,9 @@ wss.on('connection', async (ws, req) => {
         return;
       }
       if (message.method === 'account/logout') {
-        setTimeout(() => removePersistedAuth(hash, canPersist), 500);
+        logoutRequested = true;
+        clearTimeout(saveTimer);
+        await removePersistedAuth(hash, canPersist);
       }
     } catch {}
     child.stdin.write(text.replace(/[\r\n]+$/, '') + '\n');
@@ -341,7 +354,7 @@ wss.on('connection', async (ws, req) => {
     clearInterval(heartbeat);
     clearTimeout(lifetime);
     clearTimeout(saveTimer);
-    await persistAuth(hash, codexHome, canPersist).catch(() => {});
+    if (!logoutRequested) await persistAuth(hash, codexHome, canPersist).catch(() => {});
     try {
       child.kill('SIGTERM');
     } catch {}
