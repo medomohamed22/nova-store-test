@@ -30,5 +30,7 @@
       ]
     }
   ],
-  "buildCommand": "npm run build"
+  "buildCommand": "npm run build",
+  "outputDirectory": "public",
+  "framework": null
 }

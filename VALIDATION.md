@@ -3,6 +3,9 @@
 Validated locally on 2026-10-01 using Windows, Node.js v20.20.0 and installed Google Chrome. Deployment and Codex require Node.js 22 or newer as declared in package.json.
 
 - Production frontend build: passed.
+- Vercel outputDirectory: public; generated public/index.html and public/assets verified.
+- Local browser checks serve the generated public directory.
+- Node engine pinned to 22.x.
 - Unit checks: 6 passed.
 - Browser integration checks: 9 passed.
 - npm audit during dependency installation: zero reported vulnerabilities.

@@ -10,6 +10,6 @@ npm run build
 npm run dev
 ```
 
-افتح `http://localhost:4173`. مطلوب Node.js 22 أو أحدث. ملفات بناء الواجهة مرفقة في `assets` والكود في `src`، وإعداد Vercel موجود في `vercel.json`.
+افتح `http://localhost:4173`. مطلوب Node.js 22 أو أحدث. ملفات بناء الواجهة مرفقة في `public/assets` والكود في `src`، وإعداد Vercel موجود في `vercel.json`.
 
 نتائج الاختبارات وحدود التحقق في [VALIDATION.md](VALIDATION.md). لقطات الواجهة في `preview`.

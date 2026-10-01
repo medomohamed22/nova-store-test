@@ -1,5 +1,5 @@
 import {build} from 'esbuild';
-import {mkdir,copyFile} from 'node:fs/promises';
+import {mkdir,copyFile,cp} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 await mkdir('assets/vendor',{recursive:true});
@@ -11,4 +11,7 @@ for(const entry of ['react','react-dom','react-dom/client','react/jsx-runtime','
   const names=Object.keys(require(entry)).filter(name=>/^[A-Za-z_$][\w$]*$/.test(name)&&name!=='default'&&name!=='__esModule');
   await build({stdin:{contents:`import module from '${entry}';export const {${names.join(',')}}=module;export default module;`,resolveDir:process.cwd(),sourcefile:'vendor.js'},bundle:true,minify:true,format:'esm',platform:'browser',plugins,banner:entry==='react'?{}:{js:`import ReactDependency from 'react';const require=name=>{if(name==='react')return ReactDependency;throw Error('Unsupported package '+name)};`},define:{'process.env.NODE_ENV':'"production"'},outfile:'assets/vendor/'+entry.replaceAll('/','-')+'.js'});
 }
-console.log('Built editor, preview engine, React vendors and app assets.');
+await mkdir('public',{recursive:true});
+await copyFile('index.html','public/index.html');
+await cp('assets','public/assets',{recursive:true});
+console.log('Built editor, preview engine, React vendors and public/ deployment output.');
